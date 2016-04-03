@@ -16,13 +16,35 @@ plugin ForkAndGo => { code => [
       
       $app->fork_call(
         sub {
-          system($^X, $0, "minion", "worker");
+          $0 = $ENV{HYPNOTOAD_APP} // $0;
+
+          # I dunno why I have to do this for hypnotoad
+          delete($ENV{HYPNOTOAD_APP});
+          delete($ENV{HYPNOTOAD_EXE});
+          delete($ENV{HYPNOTOAD_FOREGROUND});
+          delete($ENV{HYPNOTOAD_REV});
+          delete($ENV{HYPNOTOAD_STOP});
+          delete($ENV{HYPNOTOAD_TEST});
+          delete($ENV{MOJO_APP_LOADER});
+          
+          my @cmd = (
+              $^X,
+              $0,
+              "minion",
+              "worker"
+          );
+
+          system(@cmd) == 0 
+              or die("0: $?");
+
+          return 1;
         },
         sub {
           exit;
         }
       );
-  }, sub {
+  },
+  sub {
       my $app = shift;
       
       Mojo::IOLoop->server({port => 4000} => sub {
@@ -34,8 +56,8 @@ plugin ForkAndGo => { code => [
           $app->log->debug("$$: read: $bytes");
         });
       });
-  }]
-};
+  }
+]};
 
 app->minion->add_task(echo => sub {
     my ($job, @args) = @_;

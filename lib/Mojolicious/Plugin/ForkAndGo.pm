@@ -14,13 +14,23 @@ has 'ioloop' => sub { Mojo::IOLoop->singleton };
 sub register {
   my ($self, $app, $ops) = @_;
 
+  $app->log->debug(sprintf("Parent: %s: %s: %s: %s: %s", 
+      ($ENV{FORKANDGO_PLUGIN_REV} // ""),
+      ($ENV{HYPNOTOAD_REV} // ""),
+      ($ENV{HYPNOTOAD_PID} // ""),
+      ($ENV{HYPNOTOAD_STOP} // ""),
+      join(", ", @ARGV)
+  ));
+
+  # hack to run once and only at server startup
   ++$ENV{FORKANDGO_PLUGIN_REV};
   return if $ENV{FORKANDGO_PLUGIN_REV} > 1;
 
-  $app->log->debug("Parent " . ($ENV{HYPNOTOAD_REV} // ""));
+  return if $ENV{HYPNOTOAD_STOP};
+  return if $ENV{HYPNOTOAD_PID};
+  my $hypnotoad = 1 if $ENV{HYPNOTOAD_REV} && 2 == $ENV{HYPNOTOAD_REV};
 
-  # hack
-  return unless ($ARGV[0] && $ARGV[0] =~ m/^(daemon|prefork)$/) || ($ENV{HYPNOTOAD_REV} && $ENV{HYPNOTOAD_REV} == 1);
+  return unless ($ARGV[0] && $ARGV[0] =~ m/^(daemon|prefork)$/) || $hypnotoad;
 
   foreach my $code (@{ $ops->{code} }) {
       my ($r, $w) = pipely;
@@ -34,7 +44,7 @@ sub register {
       if ($pid) {
         close($r);
 
-        $app->log->debug("Parent return: $$: $pid");
+        $app->log->info("Parent return: $$: $pid");
 
         next;
       }
@@ -47,14 +57,14 @@ sub register {
       $self->ioloop->stream($stream);
 
       $stream->on(error => sub { 
-        $app->log->debug("Child exiting: error: $$: $_[0]: $_[1]: $_[2]");
+        $app->log->info("Child exiting: error: $$: $_[0]: $_[1]: $_[2]");
 
         $self->_cleanup($app);
 
         exit;
       });
       $stream->on(close => sub { 
-        $app->log->debug("Child exiting: close: $$: $_[0]");
+        $app->log->info("Child exiting: close: $$: $_[0]");
 
         $self->_cleanup($app);
 
@@ -65,7 +75,7 @@ sub register {
         my $loop = shift;
 
         my $str = sprintf("$$: %s: %s: $r", refcount($r), openhandle($r) // "CLOSED");
-        $app->log->debug("Child recurring: $str");
+        $app->log->info("Child recurring: $str");
       });
 
       $code->($app);
@@ -78,7 +88,7 @@ sub _cleanup {
     my $self = shift;
     my $app = shift;
 
-    $app->log->debug("Child KILL: $$");
+    $app->log->info("Child KILL: $$");
 
     kill('-KILL', $$);
 }
