@@ -1,5 +1,9 @@
 #!/opt/perl
 
+BEGIN {
+    $ENV{MOJO_REACTOR}=Mojo::Reactor::Poll
+}
+
 use Mojolicious::Lite;
 
 app->log->level("debug");
