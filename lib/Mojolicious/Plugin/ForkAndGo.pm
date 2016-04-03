@@ -22,8 +22,6 @@ sub register {
   # hack
   return unless ($ARGV[0] && $ARGV[0] =~ m/^(daemon|prefork)$/) || ($ENV{HYPNOTOAD_REV} && $ENV{HYPNOTOAD_REV} == 1);
 
-  $app->log->debug("We are here");
-
   foreach my $code (@{ $ops->{code} }) {
       my ($r, $w) = pipely;
 
@@ -32,47 +30,57 @@ sub register {
         my $ck = $w;
       });
 
-      $self->ioloop->next_tick(sub {
+      die "Can't fork: $!" unless defined(my $pid = fork);
+      if ($pid) {
+        close($r);
+
+        $app->log->debug("Parent return: $$: $pid");
+
+        next;
+      }
+      close($w);
+      POSIX::setsid or die "Can't start a new session: $!";
+
+      Mojo::IOLoop->reset;
+
+      my $stream = Mojo::IOLoop::Stream->new($r)->timeout(0);
+      $self->ioloop->stream($stream);
+
+      $stream->on(error => sub { 
+        $app->log->debug("Child exiting: error: $$: $_[0]: $_[1]: $_[2]");
+
+        $self->_cleanup($app);
+
+        exit;
+      });
+      $stream->on(close => sub { 
+        $app->log->debug("Child exiting: close: $$: $_[0]");
+
+        $self->_cleanup($app);
+
+        exit;
+      });
+
+      Mojo::IOLoop->recurring(1 => sub {
         my $loop = shift;
 
-        die "Can't fork: $!" unless defined(my $pid = fork);
-        if ($pid) {
-          close($r);
-
-          $app->log->debug("Parent return: $$");
-
-          return $pid;
-        }
-        close($w);
-
-        Mojo::IOLoop->reset;
-
-        my $stream = Mojo::IOLoop::Stream->new($r)->timeout(0);
-        $self->ioloop->stream($stream);
-
-        $stream->on(error => sub { 
-          $app->log->debug("Child exiting: error: $$: $_[0]: $_[1]: $_[2]");
-
-          exit;
-        });
-        $stream->on(close => sub { 
-          $app->log->debug("Child exiting: close: $$: $_[0]");
-
-          exit;
-        });
-
-        Mojo::IOLoop->recurring(1 => sub {
-          my $loop = shift;
-
-          my $str = sprintf("$$: %s: %s: $r", refcount($r), openhandle($r) // "CLOSED");
-          $app->log->debug("Child recurring: $str");
-        });
-
-        $code->($app);
-
-        Mojo::IOLoop->start;
+        my $str = sprintf("$$: %s: %s: $r", refcount($r), openhandle($r) // "CLOSED");
+        $app->log->debug("Child recurring: $str");
       });
+
+      $code->($app);
+
+      Mojo::IOLoop->start;
   }
+}
+
+sub _cleanup {
+    my $self = shift;
+    my $app = shift;
+
+    $app->log->debug("Child KILL: $$");
+
+    kill('-KILL', $$);
 }
 
 1;
