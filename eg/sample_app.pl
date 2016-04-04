@@ -10,60 +10,65 @@ app->log->level("debug");
 
 plugin Minion => { SQLite => 'sqlite:test.db' };
 plugin qw(Mojolicious::Plugin::ForkCall);
-plugin ForkAndGo => { code => [
-    sub {
-      my $app = shift;
+plugin qw(ForkAndGo);
 
-      $app->log->info("$$: Fork Call: start");
-      
-      $app->fork_call(
-        sub {
-          # $app->log->info("$$: Fork Call: system");
-
-          $0 = $ENV{HYPNOTOAD_APP} // $0;
- 
-          # I dunno why I have (or if I have) to do this for hypnotoad
-          delete($ENV{HYPNOTOAD_APP});
-          delete($ENV{HYPNOTOAD_EXE});
-          delete($ENV{HYPNOTOAD_FOREGROUND});
-          delete($ENV{HYPNOTOAD_REV});
-          delete($ENV{HYPNOTOAD_STOP});
-          delete($ENV{HYPNOTOAD_TEST});
-          delete($ENV{MOJO_APP_LOADER});
-          
-          my @cmd = (
-              $^X,
-              $0,
-              "minion",
-              "worker"
-          );
- 
-          system(@cmd) == 0 
-              or die("0: $?");
- 
-          # $app->log->info("$$: Fork Call: return 1");
-
-          return 1;
-        },
-        sub {
-          exit;
-        }
-      );
-  },
-  sub {
+app->forked(sub {
     my $app = shift;
+
+    $app->log->info("$$: Fork Call: start");
     
-    Mojo::IOLoop->server({port => 4000} => sub {
-      my ($loop, $stream, $id) = @_;
-    
-      $stream->on(read => sub {
-        my ($stream, $bytes) = @_;
-    
-        $app->log->debug("$$: read: $bytes");
-      });
+    $app->fork_call(
+      sub {
+        $app->log->info("$$: Fork Call: system");
+
+        $0 = $ENV{HYPNOTOAD_APP} // $0;
+
+        # I dunno why I have (or if I have) to do this for hypnotoad
+        delete($ENV{HYPNOTOAD_APP});
+        delete($ENV{HYPNOTOAD_EXE});
+        delete($ENV{HYPNOTOAD_FOREGROUND});
+        delete($ENV{HYPNOTOAD_REV});
+        delete($ENV{HYPNOTOAD_STOP});
+        delete($ENV{HYPNOTOAD_TEST});
+        delete($ENV{MOJO_APP_LOADER});
+        
+        my @cmd = (
+            $^X,
+            $0,
+            "minion",
+            "worker"
+        );
+
+        system(@cmd) == 0 
+            or die("0: $?");
+
+        $app->log->info("$$: Fork Call: return 1");
+
+        return 1;
+      },
+      sub {
+        exit;
+      }
+    );
+
+    Mojo::IOLoop->start;
+});
+
+app->forked(sub {
+  my $app = shift;
+  
+  Mojo::IOLoop->server({port => 4000} => sub {
+    my ($loop, $stream, $id) = @_;
+  
+    $stream->on(read => sub {
+      my ($stream, $bytes) = @_;
+  
+      $app->log->debug("$$: read: $bytes");
     });
-  }
-]};
+  });
+
+  Mojo::IOLoop->start;
+});
 
 app->minion->add_task(echo => sub {
     my ($job, @args) = @_;
