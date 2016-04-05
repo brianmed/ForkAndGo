@@ -19,7 +19,7 @@ our $pkg = __PACKAGE__;
 use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_DEBUG} || 0;
 
 sub register {
-  my ($self, $app, $runner) = @_;
+  my ($self, $app, $ops) = @_;
 
   $Mojolicious::Plugin::ForkAndGo::app = $app;
 
@@ -28,14 +28,8 @@ sub register {
   if ($ENV{HYPNOTOAD_EXE} && ($ENV{HYPNOTOAD_REV} && 2 == $ENV{HYPNOTOAD_REV})) {
     unlink($forked);
   }
-  elsif (!$ENV{MOJO_REUSE} && !$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_REV}) {
+  elsif ($ARGV[0] && $ARGV[0] =~ m/^(daemon|prefork)$/) {
     unlink($forked);
-  }
-
-  ++$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_REV};
-
-  if ($runner) {
-      $self->$runner;
   }
 
   $app->helper(forked => sub {
@@ -70,16 +64,20 @@ sub register {
       $pkg->fork($code_key);
     });
   });
+
+  if ($ops->{process}) {
+      $self->$_ for @{ $ops->{process} };
+  }
 }
 
 sub minion {
   my $self = shift;
 
-  $self->plugin(qw(Mojolicious::Plugin::ForkCall)) 
-    unless $self->can("fork_call");
+  $app->plugin(qw(Mojolicious::Plugin::ForkCall)) 
+    unless $app->can("fork_call");
 
-  $self->forked(sub {
-    $self->fork_call(
+  $app->forked(sub {
+    $app->fork_call(
       sub {
         $0 = $ENV{HYPNOTOAD_APP} // $0;
 
@@ -99,7 +97,7 @@ sub minion {
             "worker"
         );
 
-        $self->log->debug("$$: ForkAndGo minion worker") if DEBUG;
+        $app->log->debug("$$: ForkAndGo minion worker") if DEBUG;
         system(@cmd) == 0 
             or die("0: $?");
 
