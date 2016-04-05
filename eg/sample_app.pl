@@ -1,9 +1,5 @@
 #!/opt/perl
 
-BEGIN {
-    $ENV{MOJO_REACTOR}=Mojo::Reactor::Poll
-}
-
 use Mojolicious::Lite;
 
 app->log->level("debug");
@@ -15,12 +11,8 @@ plugin qw(ForkAndGo);
 app->forked(sub {
     my $app = shift;
 
-    $app->log->info("$$: Fork Call: start");
-    
     $app->fork_call(
       sub {
-        $app->log->info("$$: Fork Call: system");
-
         $0 = $ENV{HYPNOTOAD_APP} // $0;
 
         # I dunno why I have (or if I have) to do this for hypnotoad
@@ -39,10 +31,9 @@ app->forked(sub {
             "worker"
         );
 
+        $app->log->debug("$$: ForkAndGo minion worker");
         system(@cmd) == 0 
             or die("0: $?");
-
-        $app->log->info("$$: Fork Call: return 1");
 
         return 1;
       },
@@ -57,13 +48,19 @@ app->forked(sub {
 app->forked(sub {
   my $app = shift;
   
-  Mojo::IOLoop->server({port => 4000} => sub {
-    my ($loop, $stream, $id) = @_;
-  
-    $stream->on(read => sub {
-      my ($stream, $bytes) = @_;
-  
-      $app->log->debug("$$: read: $bytes");
+  Mojo::IOLoop->timer(4 => sub {
+    $app->log->debug("$$: ForkAndGo server: 4000: timer hack");
+
+    Mojo::IOLoop->server({port => 4000} => sub {
+      my ($loop, $stream, $id) = @_;
+
+      $app->log->debug("$$: ForkAndGo server: 4000: accept");
+    
+      $stream->on(read => sub {
+        my ($stream, $bytes) = @_;
+    
+        $app->log->debug("$$: read: $bytes");
+      });
     });
   });
 

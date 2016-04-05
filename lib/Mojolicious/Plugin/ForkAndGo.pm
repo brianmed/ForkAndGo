@@ -7,11 +7,14 @@ use POSIX qw(setsid);
 use Scalar::Util qw(openhandle looks_like_number weaken);
 use Devel::Refcount qw(refcount);
 use File::Spec::Functions qw(catfile tmpdir);
-use File::Basename 'dirname';
+use IO::Handle;
+use Fcntl;
+use Mojo::Util qw(slurp spurt);
  
 our $VERSION = '0.01';
 our $app;
 our $state = {};
+our $pkg = __PACKAGE__;
 
 use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_DEBUG} || 0;
 
@@ -20,121 +23,53 @@ sub register {
 
   $Mojolicious::Plugin::ForkAndGo::app = $app;
 
+  my $forked = catfile(tmpdir, 'forkngo.state');
+
+  if ($ENV{HYPNOTOAD_EXE} && ($ENV{HYPNOTOAD_REV} && 2 == $ENV{HYPNOTOAD_REV})) {
+    unlink($forked);
+  }
+  elsif (!$ENV{MOJO_REUSE} && !$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_REV}) {
+    unlink($forked);
+  }
+
+  ++$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_REV};
+
   $app->helper(forked => sub {
     my $code = pop;
 
-    return unless __PACKAGE__->in_server;
+    Mojo::IOLoop->next_tick(sub {
+      # TODO: Somehow clean leak this up
+      my $code_key = "$code";
 
-    my $code_key = "$code";
-    my $toady_current_pid = __PACKAGE__->hypnotoad_pid;
+      # Create forks on same worker
+      eval {
+          sysopen(my $fh, $forked, O_RDWR|O_CREAT|O_EXCL) or die;
+          spurt($$, $forked);
+      };
+      if ($@) {
+          my $do_over = slurp($forked);
+          return unless $do_over == $$;
 
-    my ($r, $w) = pipely;
-
-    # TODO: Somehow clean leak this up
-    my $state = $Mojolicious::Plugin::ForkAndGo::state;
-    $state->{code}{$code_key}{r} = $r;
-    $state->{code}{$code_key}{w} = $w;
-
-    $state->{callback}{$code_key} = $code;
-    $state->{toady_current_pid}{$code_key} = $toady_current_pid;
-
-    __PACKAGE__->fork($code_key);
-  });
-}
-
-sub callback {
-  my $code_key = pop;
-
-  my $state = $Mojolicious::Plugin::ForkAndGo::state;
-  my $code = $state->{callback}{$code_key};
-
-  my $hypnotoad_state = __PACKAGE__->hypnotoad_state($code_key);
-
-  if ("empty_unknown" eq $hypnotoad_state) {
-    Mojo::IOLoop->timer(0.1 => $code);
-  }
-  elsif ("running" eq $hypnotoad_state) {
-    Mojo::IOLoop->timer(0.1 => $code);
-  }
-  elsif ("restarting" eq $hypnotoad_state) {
-    Mojo::IOLoop->timer(0.1 => $code);
-  }
-  elsif ("startup" eq $hypnotoad_state) {
-    $code->($app);
-  }
-  elsif ("not_hypnotoad" eq $hypnotoad_state) {
-    $code->($app);
-  }
-}
-
-sub in_server {
-  my $ret = 0;
-
-  my $state = $Mojolicious::Plugin::ForkAndGo::state;
-
-  # Only if started as a server
-  my $hypnotoad = $ENV{HYPNOTOAD_REV} && 2 <= $ENV{HYPNOTOAD_REV} ? 1 : 0;
-  $ret = 1 if ($ARGV[0] && $ARGV[0] =~ m/^(daemon|prefork)$/) || $hypnotoad;
-
-  $app->log->info(sprintf("$$: in_server: %s - %s - $ARGV[0]: $ret", ($ENV{HYPNOTOAD_REV} // ""), ($ENV{HYPNOTOAD_STOP} // "")));
-
-  return $ret;
-}
-
-sub hypnotoad_state {
-  my $code_key = pop;
-
-  my $state = $Mojolicious::Plugin::ForkAndGo::state;
-
-  my $toady_current_pid = $state->{toady_current_pid}{$code_key};
-  my $toady_starting_pid = __PACKAGE__->hypnotoad_pid;
-
-  my $toady_current_alive = $toady_current_pid ? kill("SIGZERO", $toady_current_pid) : 0;
-  my $toady_starting_alive = $toady_starting_pid ? kill("SIGZERO", $toady_starting_pid) : 0;
-
-  $app->log->info(
-      "$$: ForkAndGo hypnotoad_state: %s: %s: %s: %s",
-      ($toady_starting_pid // ""),
-      ($toady_current_pid // ""),
-      ($toady_current_alive // ""),
-      ($toady_starting_alive // ""),
-  ) if DEBUG;
-
-  my $ret = "";
-
-  if (defined $toady_starting_pid) {
-
-      if ("" eq $toady_starting_pid) {
-        $ret = "empty_unknown";
-      }
-      elsif ($toady_current_pid == $toady_starting_pid) {
-        $ret = "running";
-      }
-      elsif (
-          $toady_current_pid && $toady_starting_pid &&
-          $toady_current_pid != $toady_starting_pid && 
-          $toady_current_alive &&
-          $toady_starting_alive
-      ) {
-        $ret = "restarting";
+          $app->log->info("$$: created[1] next_tick: $forked") if DEBUG;
       }
       else {
-        $ret = "startup";
+          $app->log->info("$$: created[0] next_tick: $forked") if DEBUG;
       }
-  }
-  else {
-      $ret = "not_hypnotoad";
-  }
 
-  $app->log->info("$$: ForkAndGo hypnotoad_state: $ret") if DEBUG;
+      my ($r, $w) = pipely;
+      
+      $state->{code}{$code_key}{r} = $r;
+      $state->{code}{$code_key}{w} = $w;
 
-  return $ret;
+      $state->{callback}{$code_key} = $code;
+
+      $pkg->fork($code_key);
+    });
+  });
 }
 
 sub fork {
   my $code_key = pop;
-
-  my $state = $Mojolicious::Plugin::ForkAndGo::state;
 
   my $r = $state->{code}{$code_key}{r};
   my $w = $state->{code}{$code_key}{w};
@@ -143,12 +78,12 @@ sub fork {
   if ($pid) { # Parent
     close($r);
 
-    $app->log->info("$$: Parent return: $$: $pid") if DEBUG;
-
     return $pid;
   }
   close($w);
   POSIX::setsid or die "Can't start a new session: $!";
+
+  $app->log->info("$$: Child running: $$: " . getppid);
 
   # Child
   Mojo::IOLoop->reset;
@@ -157,16 +92,16 @@ sub fork {
   Mojo::IOLoop->stream($stream);
 
   $stream->on(error => sub { 
-    $app->log->info("$$: Child exiting: error: $$: $_[0]: $_[1]: $_[2]") if DEBUG;
+    $app->log->info("$$: Child exiting: error: $$: $_[1]");
 
-    __PACKAGE__->_cleanup;
+    $pkg->_cleanup;
 
     exit;
   });
   $stream->on(close => sub { 
-    $app->log->info("$$: Child exiting: close: $$: $_[0]") if DEBUG;
+    $app->log->info("$$: Child exiting: close: $$");
 
-    __PACKAGE__->_cleanup;
+    $pkg->_cleanup;
 
     exit;
   });
@@ -174,38 +109,18 @@ sub fork {
   Mojo::IOLoop->recurring(1 => sub {
     my $loop = shift;
 
-    my $str = sprintf("$$: %s: %s: $r", refcount($r), openhandle($r) // "CLOSED");
-    $app->log->info("$$: Child recurring: $str") if DEBUG;
-  });
+    my $str = sprintf("%s: %s: %s: $r", getppid, refcount($r), openhandle($r) // "CLOSED");
+    $app->log->info("$$: Child recurring: $str");
+  }) if DEBUG;
 
-  __PACKAGE__->callback($code_key);
+  my $code = $state->{callback}{$code_key};
+  $code->($app);
 
   return $pid;
 }
 
-sub hypnotoad_pid {
-  return undef unless $ENV{HYPNOTOAD_APP};
-
-  my $file = catfile(dirname($ENV{HYPNOTOAD_APP}), 'hypnotoad.pid');
-
-  return 0 unless open my $handle, '<', $file;
-  my $pid = <$handle> // "";
-  chomp $pid;
-
-  # Inditermiante?
-  return "" if !looks_like_number($pid);
-
-  # Running
-  return $pid if $pid && kill 0, $pid;
-
-  # Not running
-  return 0;
-}
-
 sub _cleanup {
-    my $app = $Mojolicious::Plugin::ForkAndGo::app;
-
-    $app->log->info("$$: Child KILL: $$") if DEBUG;
+    $app->log->info("$$: Child -KILL: $$") if DEBUG;
 
     kill('-KILL', $$);
 }
