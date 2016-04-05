@@ -19,7 +19,7 @@ our $pkg = __PACKAGE__;
 use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_DEBUG} || 0;
 
 sub register {
-  my ($self, $app) = @_;
+  my ($self, $app, $runner) = @_;
 
   $Mojolicious::Plugin::ForkAndGo::app = $app;
 
@@ -33,6 +33,10 @@ sub register {
   }
 
   ++$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_REV};
+
+  if ($runner) {
+      $self->$runner;
+  }
 
   $app->helper(forked => sub {
     my $code = pop;
@@ -65,6 +69,48 @@ sub register {
 
       $pkg->fork($code_key);
     });
+  });
+}
+
+sub minion {
+  my $self = shift;
+
+  $self->plugin(qw(Mojolicious::Plugin::ForkCall)) 
+    unless $self->can("fork_call");
+
+  $self->forked(sub {
+    $self->fork_call(
+      sub {
+        $0 = $ENV{HYPNOTOAD_APP} // $0;
+
+        # I dunno why I have (or if I have) to do this for hypnotoad
+        delete($ENV{HYPNOTOAD_APP});
+        delete($ENV{HYPNOTOAD_EXE});
+        delete($ENV{HYPNOTOAD_FOREGROUND});
+        delete($ENV{HYPNOTOAD_REV});
+        delete($ENV{HYPNOTOAD_STOP});
+        delete($ENV{HYPNOTOAD_TEST});
+        delete($ENV{MOJO_APP_LOADER});
+        
+        my @cmd = (
+            $^X,
+            $0,
+            "minion",
+            "worker"
+        );
+
+        $self->log->debug("$$: ForkAndGo minion worker") if DEBUG;
+        system(@cmd) == 0 
+            or die("0: $?");
+
+        return 1;
+      },
+      sub {
+        exit;
+      }
+    );
+
+    Mojo::IOLoop->start;
   });
 }
 
