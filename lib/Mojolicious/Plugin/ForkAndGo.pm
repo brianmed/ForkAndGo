@@ -9,7 +9,7 @@ use Devel::Refcount qw(refcount);
 use File::Spec::Functions qw(catfile tmpdir);
 use IO::Handle;
 use Fcntl;
-use Mojo::Util qw(slurp spurt);
+use Mojo::Util qw(slurp spurt steady_time);
  
 our $VERSION = '0.01';
 our $app;
@@ -37,7 +37,7 @@ sub register {
 
     Mojo::IOLoop->next_tick(sub {
       # TODO: Somehow clean leak this up
-      my $code_key = "$code";
+      my $code_key = steady_time;
 
       # Create forks on same worker
       eval {
