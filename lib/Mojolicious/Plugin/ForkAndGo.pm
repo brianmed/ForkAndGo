@@ -79,8 +79,6 @@ sub minion {
   $app->forked(sub {
     $app->fork_call(
       sub {
-        $0 = $ENV{HYPNOTOAD_APP} // $0;
-
         # I dunno why I have (or if I have) to do this for hypnotoad
         delete($ENV{HYPNOTOAD_APP});
         delete($ENV{HYPNOTOAD_EXE});
@@ -96,6 +94,7 @@ sub minion {
             "minion",
             "worker"
         );
+        $0 = join(" ", @cmd);
 
         $app->log->debug("$$: ForkAndGo minion worker") if DEBUG;
         system(@cmd) == 0 
