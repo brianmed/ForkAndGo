@@ -1,6 +1,8 @@
 package Mojolicious::Plugin::ForkAndGo;
 use Mojo::Base 'Mojolicious::Plugin';
 
+use Time::HiRes qw(usleep);
+
 our $VERSION = '0.02';
 our $pkg = __PACKAGE__;
 
@@ -17,8 +19,31 @@ sub register {
 
   $DB::single = 1;
 
-  if ($caddy->is_alive) {
+  if ($caddy->is_alive && $ENV{HYPNOTOAD_STOP}) {
+    my $state = $caddy->state;
+    $state->{shutdown} = 1;
+    $caddy->state($state);
+
+    return;
+  }
+
+  if ($caddy->is_alive && !$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD}) {
+    $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: shutdown");
+
+    my $state = $caddy->state;
+    $state->{shutdown} = 1;
+    $caddy->state($state);
+
+    while ($caddy->is_alive) {
+      $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: waiting");
+
+      usleep(50000);
+    }
+
+    unlink($caddy->state_file);
+  } elsif ($caddy->is_alive) {
     $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD}");
+
   } else {
     my $state_file = $caddy->state_file;
 
@@ -117,25 +142,29 @@ sub watchdog {
   return sub {
     my $state = $caddy->state;
 
+    kill("-KILL", $caddy->state->{caddy_pid}) unless kill("SIGZERO", $caddy->state->{caddy_ppid});
+
     $caddy->app->log->info("$$: Caddy recurring: " . scalar(keys %{$state->{slots}}));
   };
 };
 
 sub is_alive {
-  return $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID} ? kill("SIGZERO", $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID}) : 0;
+  my $caddy = shift;
+
+  return $caddy->state->{caddy_pid} ? kill("SIGZERO", $caddy->state->{caddy_pid}) : 0;
 }
 
 sub lock {
-    my ($fh) = @_;
-    flock($fh, LOCK_EX) or die "Cannot lock mailbox - $!\n";
+    my $fh = shift;
+    flock($fh, LOCK_EX) or die "Cannot lock ? - $!\n";
 
     # and, in case someone appended while we were waiting...
     seek($fh, 0, SEEK_END) or die "Cannot seek - $!\n";
 }
 
 sub unlock {
-    my ($fh) = @_;
-    flock($fh, LOCK_UN) or die "Cannot unlock mailbox - $!\n";
+    my $fh = shift;
+    flock($fh, LOCK_UN) or die "Cannot unlock ? - $!\n";
 }
 
 sub state {
@@ -179,7 +208,7 @@ sub add {
       $app->log->info("$$: Worker next_tick");
     
       sysopen(my $fh, $state_file, O_RDWR|O_CREAT|O_EXCL) or die("$state_file: $$: $!\n");
-      spurt(encode_json({ caddy_pid => $$, caddy_ppid => getppid }), $state_file);
+      spurt(encode_json({ shutdown => 0, caddy_pid => $$, caddy_ppid => getppid }), $state_file);
       close($fh);
     };
     
@@ -204,7 +233,6 @@ sub add {
     $slots->{$code_key}{created} = $created;
     
     ++$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD};
-    $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID} = $$;
     spurt(encode_json($state), $state_file);
     
     $app->log->info("$$-->: $created: $Mojolicious::Plugin::ForkAndGo::count") if DEBUG;
@@ -231,6 +259,8 @@ sub create {
 
         die($msg);
     }
+
+    POSIX::setsid or die "Can't start a new session: $!";
 
     # Watchdog
     Mojo::IOLoop->recurring(1 => $caddy->watchdog);
@@ -268,8 +298,11 @@ sub fork {
   Mojo::IOLoop->recurring(1 => sub {
     my $loop = shift;
 
-    my $str = sprintf("$$: %s ", getppid);
+    my $str = sprintf("$$: %s ", join(", ", @{ $caddy->state }{qw(caddy_ppid shutdown)}));
     $app->log->info("$$: Child recurring to watch caddy: $str");
+
+    # TODO: Do a graceful stop
+    kill("-KILL", $caddy->state->{caddy_pid}) if $caddy->state->{shutdown};
   });
 
   $code->($app);
