@@ -97,7 +97,7 @@ use Mojo::IOLoop;
 use Devel::Refcount qw(refcount);
 use File::Spec::Functions qw(catfile tmpdir);
 use IO::Handle;
-use Fcntl;
+use Fcntl qw(O_RDWR O_CREAT O_EXCL LOCK_EX SEEK_END LOCK_UN :flock);
 use Mojo::Util qw(slurp spurt steady_time);
 use Mojo::JSON qw(encode_json decode_json);
 use POSIX qw(setsid);
@@ -117,7 +117,7 @@ sub watchdog {
   return sub {
     my $state = $caddy->state;
 
-    $caddy->app->log->info("$$: Caddy recurring: " . scalar(@{$state->{slots}}));
+    $caddy->app->log->info("$$: Caddy recurring: " . scalar(keys %{$state->{slots}}));
   };
 };
 
@@ -125,8 +125,39 @@ sub is_alive {
   return $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID} ? kill("SIGZERO", $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID}) : 0;
 }
 
+sub lock {
+    my ($fh) = @_;
+    flock($fh, LOCK_EX) or die "Cannot lock mailbox - $!\n";
+
+    # and, in case someone appended while we were waiting...
+    seek($fh, 0, SEEK_END) or die "Cannot seek - $!\n";
+}
+
+sub unlock {
+    my ($fh) = @_;
+    flock($fh, LOCK_UN) or die "Cannot unlock mailbox - $!\n";
+}
+
 sub state {
-  return decode_json(slurp(shift->state_file) // '{}');
+  my $caddy = shift;
+  my $new_state = shift;
+
+  # Should be created by sysopen
+  my $fh;
+  if (-f $caddy->state_file) {
+    open($fh, ">>", $caddy->state_file)
+      or die(sprintf("Can't open %s", $caddy->state_file));
+  }
+
+  if ($new_state) {
+    return spurt(encode_json($new_state), $caddy->state_file);
+  }
+  elsif (-f $caddy->state_file) {
+    return decode_json(slurp($caddy->state_file));
+  }
+  else {
+    return {};
+  }
 }
 
 sub is_me {
@@ -167,17 +198,16 @@ sub add {
     $app->log->info("$state_file: sysopen($$) <-- caddy: " . ($ENV{MOJOLICIOUS_PLUGIN_FORANDKNGO_ADD} // 'undef'));
     
     my $state = $caddy->state;
-    my $slots = $state->{slots} //= [];
+    my $slots = $state->{slots} //= {};
     
-    push(@{ $slots }, {
-        code_key => $code_key
-    });
+    $slots->{$code_key} = {};
+    $slots->{$code_key}{created} = $created;
     
     ++$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD};
     $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID} = $$;
     spurt(encode_json($state), $state_file);
     
-    $app->log->info("$$-->: $created: $Mojolicious::Plugin::ForkAndGo::count");
+    $app->log->info("$$-->: $created: $Mojolicious::Plugin::ForkAndGo::count") if DEBUG;
     
     # Create the slots in the caddy
     Mojo::IOLoop->next_tick($caddy->create) if ++$created == $Mojolicious::Plugin::ForkAndGo::count;
@@ -205,12 +235,13 @@ sub create {
     # Watchdog
     Mojo::IOLoop->recurring(1 => $caddy->watchdog);
 
-    foreach my $slot (@{ $state->{slots} }) {
-        my $code_key = $slot->{code_key};
-
+    foreach my $code_key (keys %{ $state->{slots} }) {
         $app->log->info("$$: $code_key: $code{$code_key}");
 
-        $caddy->fork($code{$code_key});
+        my $pid = $caddy->fork($code{$code_key});
+
+        $state->{slots}{$code_key}{pid} = $pid if $$ != $pid;
+        $caddy->state($state) if $$ != $pid;
     }
   });
 }
@@ -244,6 +275,8 @@ sub fork {
   $code->($app);
 
   Mojo::IOLoop->start;
+
+  return $$;
 }
 
 sub pid_wait {
