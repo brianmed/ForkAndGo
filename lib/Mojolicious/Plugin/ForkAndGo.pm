@@ -101,6 +101,7 @@ use POSIX qw(setsid);
 use Time::HiRes qw(usleep);
 
 our %code = ();
+our $created = 0;
 
 has qw(app);
 
@@ -174,7 +175,7 @@ sub add {
   spurt(encode_json($state), $state_file);
   
   # Create the slots in the caddy
-  Mojo::IOLoop->next_tick($caddy->create);
+  Mojo::IOLoop->next_tick($caddy->create) unless $created++;
 
   return sub { };
 }
