@@ -6,6 +6,7 @@ our $pkg = __PACKAGE__;
 
 our $caddy_pkg = "${pkg}::Caddy";
 our $plugin_pkg = "${pkg}::Plugin";
+our $count = 0;
 
 use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_DEBUG} || 0;
 
@@ -17,7 +18,7 @@ sub register {
   $DB::single = 1;
 
   if ($caddy->is_alive) {
-    $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_ADD}");
+    $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD}");
   } else {
     my $state_file = $caddy->state_file;
 
@@ -27,6 +28,8 @@ sub register {
   }
 
   $app->helper(forked => sub {
+    ++$count;
+
     Mojo::IOLoop->next_tick($caddy->add(pop));
   });
 
@@ -104,12 +107,9 @@ our %code = ();
 our $created = 0;
 
 has qw(app);
+has state_file => sub { catfile tmpdir, 'forkngo.state_file' };
 
 use constant DEBUG => Mojolicious::Plugin::ForkAndGo::DEBUG;
-
-sub state_file {
-  return catfile(tmpdir, 'forkngo.watchdog');
-}
 
 sub watchdog {
   my $caddy = shift;
@@ -122,11 +122,11 @@ sub watchdog {
 };
 
 sub is_alive {
-  return $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_CADDY_PID} ? kill("SIGZERO", $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_CADDY_PID}) : 0;
+  return $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID} ? kill("SIGZERO", $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID}) : 0;
 }
 
 sub state {
-  return decode_json(slurp(shift->state_file));
+  return decode_json(slurp(shift->state_file) // '{}');
 }
 
 sub is_me {
@@ -135,49 +135,53 @@ sub is_me {
 
 sub add {
   my $caddy = shift;
-  my $code = shift;
-
-  my $state_file = $caddy->state_file;
-
-  my $app = $caddy->app;
-
-  eval {
-    $app->log->info("$$: Worker next_tick");
-
-    sysopen(my $fh, $state_file, O_RDWR|O_CREAT|O_EXCL) or die("$state_file: $$: $!\n");
-    spurt(encode_json({ caddy_pid => $$, caddy_ppid => getppid }), $state_file);
-    close($fh);
-  };
-
-  # Outside the caddy
-  if ($@ && !$caddy->is_me) {
-    chomp(my $err = $@);
-
-    $app->log->info("$$: sysopen($state_file): $err");
-
-    return sub { };
-  }
-
-  # Inside the caddy
-  $app->log->info("$state_file: sysopen($$) <-- caddy: " . ($ENV{MOJOLICIOUS_PLUGIN_FORKNGO_ADD} // 'undef'));
-
-  my $state = $caddy->state;
-  my $slots = $state->{slots} //= [];
 
   my $code_key = steady_time;
-  push(@{ $slots }, {
-      code_key => $code_key
-  });
-  $code{$code_key} = $code;
+  $code{$code_key} = shift;
 
-  ++$ENV{MOJOLICIOUS_PLUGIN_FORKNGO_ADD};
-  $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_CADDY_PID} = $$;
-  spurt(encode_json($state), $state_file);
-  
-  # Create the slots in the caddy
-  Mojo::IOLoop->next_tick($caddy->create) unless $created++;
-
-  return sub { };
+  return sub {
+    my $state_file = $caddy->state_file;
+    
+    my $app = $caddy->app;
+    
+    eval {
+      $app->log->info("$$: Worker next_tick");
+    
+      sysopen(my $fh, $state_file, O_RDWR|O_CREAT|O_EXCL) or die("$state_file: $$: $!\n");
+      spurt(encode_json({ caddy_pid => $$, caddy_ppid => getppid }), $state_file);
+      close($fh);
+    };
+    
+    # Outside the caddy
+    if ($@ && !$caddy->is_me) {
+      chomp(my $err = $@);
+    
+      $app->log->info("$$: sysopen($state_file): $err");
+    
+      return sub { };
+    }
+    
+    return if !$caddy->is_me;
+    
+    # Inside the caddy
+    $app->log->info("$state_file: sysopen($$) <-- caddy: " . ($ENV{MOJOLICIOUS_PLUGIN_FORANDKNGO_ADD} // 'undef'));
+    
+    my $state = $caddy->state;
+    my $slots = $state->{slots} //= [];
+    
+    push(@{ $slots }, {
+        code_key => $code_key
+    });
+    
+    ++$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD};
+    $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_CADDY_PID} = $$;
+    spurt(encode_json($state), $state_file);
+    
+    $app->log->info("$$-->: $created: $Mojolicious::Plugin::ForkAndGo::count");
+    
+    # Create the slots in the caddy
+    Mojo::IOLoop->next_tick($caddy->create) if ++$created == $Mojolicious::Plugin::ForkAndGo::count;
+  };
 }
 
 sub create {
@@ -203,6 +207,7 @@ sub create {
 
     foreach my $slot (@{ $state->{slots} }) {
         my $code_key = $slot->{code_key};
+
         $app->log->info("$$: $code_key: $code{$code_key}");
 
         $caddy->fork($code{$code_key});
