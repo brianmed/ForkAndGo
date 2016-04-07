@@ -5,7 +5,7 @@ use Mojolicious::Lite;
 app->log->level("debug");
 
 plugin Minion => { SQLite => 'sqlite:test.db' };
-plugin ForkAndGo => { process => ["minion", "minion" ] };
+plugin ForkAndGo => { process => ["minion", "minion", "minion"] };
 
 app->minion->add_task(joy => sub {
     my ($job, @args) = @_;

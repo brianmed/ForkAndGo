@@ -1,84 +1,62 @@
 package Mojolicious::Plugin::ForkAndGo;
 use Mojo::Base 'Mojolicious::Plugin';
 
-use Mojo::IOLoop;
-use IO::Pipely 'pipely';
-use POSIX qw(setsid);
-use Scalar::Util qw(openhandle looks_like_number weaken);
-use Devel::Refcount qw(refcount);
-use File::Spec::Functions qw(catfile tmpdir);
-use IO::Handle;
-use Fcntl;
-use Mojo::Util qw(slurp spurt steady_time);
- 
-our $VERSION = '0.01';
-our $app;
-our $state = {};
+our $VERSION = '0.02';
 our $pkg = __PACKAGE__;
+
+our $caddy_pkg = "${pkg}::Caddy";
+our $plugin_pkg = "${pkg}::Plugin";
 
 use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_DEBUG} || 0;
 
 sub register {
   my ($self, $app, $ops) = @_;
 
-  $Mojolicious::Plugin::ForkAndGo::app = $app;
+  my $caddy = $caddy_pkg->new(app => $app);
 
-  my $forked = catfile(tmpdir, 'forkngo.state');
+  $DB::single = 1;
 
-  if ($ENV{HYPNOTOAD_EXE} && ($ENV{HYPNOTOAD_REV} && 2 == $ENV{HYPNOTOAD_REV})) {
-    unlink($forked);
-  }
-  elsif ($ARGV[0] && $ARGV[0] =~ m/^(daemon|prefork)$/) {
-    unlink($forked);
+  if ($caddy->is_alive) {
+    $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_ADD}");
+  } else {
+    my $state_file = $caddy->state_file;
+
+    $app->log->info("$$: unlink($state_file)");
+
+    unlink($state_file);
   }
 
   $app->helper(forked => sub {
-    my $code = pop;
-
-    Mojo::IOLoop->next_tick(sub {
-      # TODO: Somehow clean leak this up
-      my $code_key = steady_time;
-
-      # Create forks on same worker
-      eval {
-          sysopen(my $fh, $forked, O_RDWR|O_CREAT|O_EXCL) or die;
-          spurt($$, $forked);
-      };
-      if ($@) {
-          my $do_over = slurp($forked);
-          return unless $do_over == $$;
-
-          $app->log->info("$$: created[1] next_tick: $forked") if DEBUG;
-      }
-      else {
-          $app->log->info("$$: created[0] next_tick: $forked") if DEBUG;
-      }
-
-      my ($r, $w) = pipely;
-      
-      $state->{code}{$code_key}{r} = $r;
-      $state->{code}{$code_key}{w} = $w;
-
-      $state->{callback}{$code_key} = $code;
-
-      $pkg->fork($code_key);
-    });
+    Mojo::IOLoop->next_tick($caddy->add(pop));
   });
 
   if ($ops->{process}) {
-      $self->$_ for @{ $ops->{process} };
+    $plugin_pkg->$_($caddy) for @{ $ops->{process} };
   }
 }
 
+package Mojolicious::Plugin::ForkAndGo::Plugin;
+use Mojo::Base -base;
+
+use constant DEBUG => Mojolicious::Plugin::ForkAndGo::DEBUG;
+
 sub minion {
-  my $self = shift;
+  my $caddy = pop;
+
+  my $app = $caddy->app;
 
   $app->plugin(qw(Mojolicious::Plugin::ForkCall)) 
     unless $app->can("fork_call");
 
   $app->forked(sub {
+    my $app = shift;
+
+    $app->log->info("$$: Child forked: " . getppid);
+
     $app->fork_call(
       sub {
+        $app->log->info("$$: Child fork_call: " . getppid);
+
         # I dunno why I have (or if I have) to do this for hypnotoad
         delete($ENV{HYPNOTOAD_APP});
         delete($ENV{HYPNOTOAD_EXE});
@@ -106,69 +84,180 @@ sub minion {
         exit;
       }
     );
+  });
+}
 
-    Mojo::IOLoop->start;
+package Mojolicious::Plugin::ForkAndGo::Caddy;
+use Mojo::Base -base;
+
+use Mojo::IOLoop;
+use Devel::Refcount qw(refcount);
+use File::Spec::Functions qw(catfile tmpdir);
+use IO::Handle;
+use Fcntl;
+use Mojo::Util qw(slurp spurt steady_time);
+use Mojo::JSON qw(encode_json decode_json);
+use POSIX qw(setsid);
+use Time::HiRes qw(usleep);
+
+our %code = ();
+
+has qw(app);
+
+use constant DEBUG => Mojolicious::Plugin::ForkAndGo::DEBUG;
+
+sub state_file {
+  return catfile(tmpdir, 'forkngo.watchdog');
+}
+
+sub watchdog {
+  my $caddy = shift;
+
+  return sub {
+    my $state = $caddy->state;
+
+    $caddy->app->log->info("$$: Caddy recurring: " . scalar(@{$state->{slots}}));
+  };
+};
+
+sub is_alive {
+  return $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_CADDY_PID} ? kill("SIGZERO", $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_CADDY_PID}) : 0;
+}
+
+sub state {
+  return decode_json(slurp(shift->state_file));
+}
+
+sub is_me {
+    return shift->state->{caddy_pid} == $$;
+}
+
+sub add {
+  my $caddy = shift;
+  my $code = shift;
+
+  my $state_file = $caddy->state_file;
+
+  my $app = $caddy->app;
+
+  eval {
+    $app->log->info("$$: Worker next_tick");
+
+    sysopen(my $fh, $state_file, O_RDWR|O_CREAT|O_EXCL) or die("$state_file: $$: $!\n");
+    spurt(encode_json({ caddy_pid => $$, caddy_ppid => getppid }), $state_file);
+    close($fh);
+  };
+
+  # Outside the caddy
+  if ($@ && !$caddy->is_me) {
+    chomp(my $err = $@);
+
+    $app->log->info("$$: sysopen($state_file): $err");
+
+    return sub { };
+  }
+
+  # Inside the caddy
+  $app->log->info("$state_file: sysopen($$) <-- caddy: " . ($ENV{MOJOLICIOUS_PLUGIN_FORKNGO_ADD} // 'undef'));
+
+  my $state = $caddy->state;
+  my $slots = $state->{slots} //= [];
+
+  my $code_key = steady_time;
+  push(@{ $slots }, {
+      code_key => $code_key
+  });
+  $code{$code_key} = $code;
+
+  ++$ENV{MOJOLICIOUS_PLUGIN_FORKNGO_ADD};
+  $ENV{MOJOLICIOUS_PLUGIN_FORKNGO_CADDY_PID} = $$;
+  spurt(encode_json($state), $state_file);
+  
+  # Create the slots in the caddy
+  Mojo::IOLoop->next_tick($caddy->create);
+
+  return sub { };
+}
+
+sub create {
+  my $caddy = shift;
+
+  $caddy->app->log->info("$$: Caddy create");
+
+  return(sub {
+    my $state = $caddy->state;
+    my $app = $caddy->app;
+
+    # Belt and suspenders error checking, shouldn't be reached (I think)
+    if ($state->{caddy} && $$ != $state->{caddy}) {
+        my $msg = "We are not the caddy";
+
+        $app->log->error($msg);
+
+        die($msg);
+    }
+
+    # Watchdog
+    Mojo::IOLoop->recurring(1 => $caddy->watchdog);
+
+    foreach my $slot (@{ $state->{slots} }) {
+        my $code_key = $slot->{code_key};
+        $app->log->info("$$: $code_key: $code{$code_key}");
+
+        $caddy->fork($code{$code_key});
+    }
   });
 }
 
 sub fork {
-  my $code_key = pop;
-
-  my $r = $state->{code}{$code_key}{r};
-  my $w = $state->{code}{$code_key}{w};
+  my $caddy = shift;
+  my $code = shift;
+  
+  my $app = $caddy->app;
 
   die "Can't fork: $!" unless defined(my $pid = fork);
   if ($pid) { # Parent
-    close($r);
+
+    $app->log->info("$$: Parent return");
 
     return $pid;
   }
-  close($w);
-  POSIX::setsid or die "Can't start a new session: $!";
 
   $app->log->info("$$: Child running: $$: " . getppid);
 
-  # Child
+  # Caddy's Child
   Mojo::IOLoop->reset;
-
-  my $stream = Mojo::IOLoop::Stream->new($r)->timeout(0);
-  Mojo::IOLoop->stream($stream);
-
-  $stream->on(error => sub { 
-    $app->log->info("$$: Child exiting: error: $$: $_[1]");
-
-    $pkg->_cleanup;
-
-    exit;
-  });
-  $stream->on(close => sub { 
-    $app->log->info("$$: Child exiting: close: $$");
-
-    $pkg->_cleanup;
-
-    exit;
-  });
 
   Mojo::IOLoop->recurring(1 => sub {
     my $loop = shift;
 
-    my $str = sprintf("%s: %s: %s: $r", getppid, refcount($r), openhandle($r) // "CLOSED");
-    $app->log->info("$$: Child recurring: $str");
-  }) if DEBUG;
+    my $str = sprintf("$$: %s ", getppid);
+    $app->log->info("$$: Child recurring to watch caddy: $str");
+  });
 
-  my $code = $state->{callback}{$code_key};
   $code->($app);
 
-  return $pid;
+  Mojo::IOLoop->start;
 }
 
-sub _cleanup {
-    $app->log->info("$$: Child -KILL: $$") if DEBUG;
+sub pid_wait {
+  my ($pid, $timeout) = @_;
 
-    kill('-KILL', $$);
+  my $ret;
+
+  my $done = steady_time + $timeout;
+  do {
+    $ret = kill("SIGZERO", $pid);
+
+    usleep 50000 if $ret;
+
+  } until(!$ret || $done < steady_time);
+
+  return !$ret;
 }
 
 1;
+
 __END__
 
 =encoding utf8
