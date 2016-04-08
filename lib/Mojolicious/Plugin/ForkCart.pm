@@ -42,10 +42,16 @@ sub register {
   } elsif ($caddy->is_alive) {
     $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: $ENV{MOJOLICIOUS_PLUGIN_FORKCART_ADD}");
 
-  } else {
+  } elsif ($ARGV[0] && $ARGV[0] =~ m/^(daemon|prefork)$/) {
     my $state_file = $caddy->state_file;
 
-    $app->log->info("$$: unlink($state_file)");
+    $app->log->info("$$: $ARGV[0]: unlink($state_file)");
+
+    unlink($state_file);
+  } elsif ($ENV{HYPNOTOAD_REV} && 2 <= $ENV{HYPNOTOAD_REV}) {
+    my $state_file = $caddy->state_file;
+
+    $app->log->info("$$: hypnotoad: unlink($state_file)");
 
     unlink($state_file);
   }
@@ -123,7 +129,7 @@ use IO::Handle;
 use Fcntl qw(O_RDWR O_CREAT O_EXCL LOCK_EX SEEK_END LOCK_UN :flock);
 use Mojo::Util qw(slurp spurt steady_time);
 use Mojo::JSON qw(encode_json decode_json);
-use POSIX qw(setsid);
+use POSIX qw(:sys_wait_h);
 use Time::HiRes qw(usleep);
 
 our %code = ();
@@ -140,7 +146,8 @@ sub watchdog {
   return sub {
     my $state = $caddy->state;
 
-    kill("-KILL", $caddy->state->{caddy_pid}) unless kill("SIGZERO", $caddy->state->{caddy_ppid});
+    # exit unless kill("SIGZERO", $caddy->state->{caddy_manager}) || $caddy->state->{shutdown};
+    kill("-KILL", getpgrp) if $caddy->state->{shutdown};
 
     $caddy->app->log->info("$$: Caddy recurring: " . scalar(keys %{$state->{slots}}));
   };
@@ -153,7 +160,7 @@ sub is_alive {
 }
 
 sub lock {
-    my $fh = shift;
+    my $fh = pop;
     flock($fh, LOCK_EX) or die "Cannot lock ? - $!\n";
 
     # and, in case someone appended while we were waiting...
@@ -161,7 +168,7 @@ sub lock {
 }
 
 sub unlock {
-    my $fh = shift;
+    my $fh = pop;
     flock($fh, LOCK_UN) or die "Cannot unlock ? - $!\n";
 }
 
@@ -171,24 +178,41 @@ sub state {
 
   # Should be created by sysopen
   my $fh;
-  if (-f $caddy->state_file) {
+  if (-f $caddy->state_file && -s $caddy->state_file) {
     open($fh, ">>", $caddy->state_file)
       or die(sprintf("Can't open %s", $caddy->state_file));
+
+    $caddy->lock($fh);
+  }
+  elsif (!$new_state) {
+    return {};
   }
 
   if ($new_state) {
-    return spurt(encode_json($new_state), $caddy->state_file);
+    spurt(encode_json($new_state), $caddy->state_file);
+
+    $caddy->unlock($fh);
+
+    return $new_state;
   }
   elsif (-f $caddy->state_file) {
-    return decode_json(slurp($caddy->state_file));
+    my $ret = decode_json(slurp($caddy->state_file));
+
+    $caddy->unlock($fh);
+
+    return $ret;
   }
   else {
+    $caddy->unlock($fh);
+
     return {};
   }
 }
 
 sub is_me {
-    return shift->state->{caddy_pid} == $$;
+    my $state = shift->state;
+    return 0 if !defined $state->{caddy_pid};
+    return $state->{caddy_pid} == $$;
 }
 
 sub add {
@@ -206,7 +230,7 @@ sub add {
       $app->log->info("$$: Worker next_tick");
     
       sysopen(my $fh, $state_file, O_RDWR|O_CREAT|O_EXCL) or die("$state_file: $$: $!\n");
-      spurt(encode_json({ shutdown => 0, caddy_pid => $$, caddy_ppid => getppid }), $state_file);
+      spurt(encode_json({ shutdown => 0, caddy_pid => $$, caddy_manager => $ARGV[0] && $ARGV[0] =~ m/daemon/ ? $$ : getppid }), $state_file);
       close($fh);
     };
     
@@ -222,7 +246,7 @@ sub add {
     return if !$caddy->is_me;
     
     # Inside the caddy
-    $app->log->info("$state_file: sysopen($$) <-- caddy: " . ($ENV{MOJOLICIOUS_PLUGIN_FORANDKNGO_ADD} // 'undef'));
+    $app->log->info("$state_file: sysopen($$) <-- caddy: " . ($ENV{MOJOLICIOUS_PLUGIN_FORKCART_ADD} // 'undef'));
     
     my $state = $caddy->state;
     my $slots = $state->{slots} //= {};
@@ -258,7 +282,7 @@ sub create {
         die($msg);
     }
 
-    POSIX::setsid or die "Can't start a new session: $!";
+    $app->log->info("$$: caddy->state->{caddy_manager}: " . $caddy->state->{caddy_manager});
 
     # Watchdog
     Mojo::IOLoop->recurring(1 => $caddy->watchdog);
@@ -280,15 +304,25 @@ sub fork {
   
   my $app = $caddy->app;
 
+  my $pgroup = getpgrp;
+
   die "Can't fork: $!" unless defined(my $pid = fork);
   if ($pid) { # Parent
 
     $app->log->info("$$: Parent return");
 
+    $SIG{CHLD} = sub {
+      while ((my $child = waitpid(-1, WNOHANG)) > 0) {
+        $app->log->info("$$: Parent waiting: $child");
+      }
+    };
+
     return $pid;
   }
 
-  $app->log->info("$$: Child running: $$: " . getppid);
+  $app->log->info("$$: Slot running: $$: " . getppid);
+
+  setpgrp($pid, $pgroup);
 
   # Caddy's Child
   Mojo::IOLoop->reset;
@@ -296,11 +330,11 @@ sub fork {
   Mojo::IOLoop->recurring(1 => sub {
     my $loop = shift;
 
-    my $str = sprintf("$$: %s ", join(", ", @{ $caddy->state }{qw(caddy_ppid shutdown)}));
-    $app->log->info("$$: Child recurring to watch caddy: $str");
+    my $str = sprintf("%s", join(", ", @{ $caddy->state }{'caddy_manager', 'shutdown'}));
+    $app->log->info("$$: Caddy slot monitor: $str");
 
     # TODO: Do a graceful stop
-    kill("-KILL", $caddy->state->{caddy_pid}) if $caddy->state->{shutdown};
+    kill("-KILL", $pgroup) if $caddy->state->{shutdown} || !$caddy->is_alive;
   });
 
   $code->($app);
