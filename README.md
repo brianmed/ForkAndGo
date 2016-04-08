@@ -6,7 +6,7 @@ Auto launch a process on Mojolicious startup
     use Mojolicious::Lite;
 
     plugin Minion => { SQLite => 'sqlite:test.db' };
-    plugin ForkCall => { process => ["minion", "minion" ] };
+    plugin ForkCart => { process => ["minion", "minion" ] };
 
     app->minion->add_task(joy => sub {
         my ($job, @args) = @_;
