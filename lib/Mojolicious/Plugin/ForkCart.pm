@@ -126,7 +126,7 @@ use Mojo::IOLoop;
 use Devel::Refcount qw(refcount);
 use File::Spec::Functions qw(catfile tmpdir);
 use IO::Handle;
-use Fcntl qw(O_RDWR O_CREAT O_EXCL LOCK_EX SEEK_END LOCK_UN :flock);
+use Fcntl qw(O_RDWR O_CREAT O_EXCL LOCK_EX SEEK_SET LOCK_UN :flock);
 use Mojo::Util qw(slurp spurt steady_time);
 use Mojo::JSON qw(encode_json decode_json);
 use POSIX qw(:sys_wait_h);
