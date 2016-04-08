@@ -1,4 +1,4 @@
-package Mojolicious::Plugin::ForkAndGo;
+package Mojolicious::Plugin::ForkCart;
 use Mojo::Base 'Mojolicious::Plugin';
 
 use Time::HiRes qw(usleep);
@@ -10,7 +10,7 @@ our $caddy_pkg = "${pkg}::Caddy";
 our $plugin_pkg = "${pkg}::Plugin";
 our $count = 0;
 
-use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_DEBUG} || 0;
+use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKCART_DEBUG} || 0;
 
 sub register {
   my ($self, $app, $ops) = @_;
@@ -27,7 +27,7 @@ sub register {
     return;
   }
 
-  if ($caddy->is_alive && !$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD}) {
+  if ($caddy->is_alive && !$ENV{MOJOLICIOUS_PLUGIN_FORKCART_ADD}) {
     $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: shutdown");
 
     my $state = $caddy->state;
@@ -42,7 +42,7 @@ sub register {
 
     unlink($caddy->state_file);
   } elsif ($caddy->is_alive) {
-    $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: $ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD}");
+    $app->log->info("$$: " . ($caddy->state->{caddy_pid} // "") . " is alive: $ENV{MOJOLICIOUS_PLUGIN_FORKCART_ADD}");
 
   } else {
     my $state_file = $caddy->state_file;
@@ -63,10 +63,10 @@ sub register {
   }
 }
 
-package Mojolicious::Plugin::ForkAndGo::Plugin;
+package Mojolicious::Plugin::ForkCart::Plugin;
 use Mojo::Base -base;
 
-use constant DEBUG => Mojolicious::Plugin::ForkAndGo::DEBUG;
+use constant DEBUG => Mojolicious::Plugin::ForkCart::DEBUG;
 
 sub minion {
   my $caddy = pop;
@@ -102,7 +102,7 @@ sub minion {
         );
         $0 = join(" ", @cmd);
 
-        $app->log->debug("$$: ForkAndGo minion worker") if DEBUG;
+        $app->log->debug("$$: ForkCart minion worker") if DEBUG;
         system(@cmd) == 0 
             or die("0: $?");
 
@@ -115,7 +115,7 @@ sub minion {
   });
 }
 
-package Mojolicious::Plugin::ForkAndGo::Caddy;
+package Mojolicious::Plugin::ForkCart::Caddy;
 use Mojo::Base -base;
 
 use Mojo::IOLoop;
@@ -134,7 +134,7 @@ our $created = 0;
 has qw(app);
 has state_file => sub { catfile tmpdir, 'forkngo.state_file' };
 
-use constant DEBUG => Mojolicious::Plugin::ForkAndGo::DEBUG;
+use constant DEBUG => Mojolicious::Plugin::ForkCart::DEBUG;
 
 sub watchdog {
   my $caddy = shift;
@@ -232,13 +232,13 @@ sub add {
     $slots->{$code_key} = {};
     $slots->{$code_key}{created} = $created;
     
-    ++$ENV{MOJOLICIOUS_PLUGIN_FORKANDGO_ADD};
+    ++$ENV{MOJOLICIOUS_PLUGIN_FORKCART_ADD};
     spurt(encode_json($state), $state_file);
     
-    $app->log->info("$$-->: $created: $Mojolicious::Plugin::ForkAndGo::count") if DEBUG;
+    $app->log->info("$$-->: $created: $Mojolicious::Plugin::ForkCart::count") if DEBUG;
     
     # Create the slots in the caddy
-    Mojo::IOLoop->next_tick($caddy->create) if ++$created == $Mojolicious::Plugin::ForkAndGo::count;
+    Mojo::IOLoop->next_tick($caddy->create) if ++$created == $Mojolicious::Plugin::ForkCart::count;
   };
 }
 
@@ -336,23 +336,23 @@ __END__
 
 =head1 NAME
 
-Mojolicious::Plugin::ForkAndGo - Mojolicious Plugin
+Mojolicious::Plugin::ForkCart - Mojolicious Plugin
 
 =head1 SYNOPSIS
 
   # Mojolicious
-  $self->plugin('ForkAndGo');
+  $self->plugin('ForkCart');
 
   # Mojolicious::Lite
-  plugin 'ForkAndGo';
+  plugin 'ForkCart';
 
 =head1 DESCRIPTION
 
-L<Mojolicious::Plugin::ForkAndGo> is a L<Mojolicious> plugin.
+L<Mojolicious::Plugin::ForkCart> is a L<Mojolicious> plugin.
 
 =head1 METHODS
 
-L<Mojolicious::Plugin::ForkAndGo> inherits all methods from
+L<Mojolicious::Plugin::ForkCart> inherits all methods from
 L<Mojolicious::Plugin> and implements the following new ones.
 
 =head2 register
