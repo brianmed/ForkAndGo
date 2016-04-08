@@ -164,7 +164,7 @@ sub lock {
     flock($fh, LOCK_EX) or die "Cannot lock ? - $!\n";
 
     # and, in case someone appended while we were waiting...
-    seek($fh, 0, SEEK_END) or die "Cannot seek - $!\n";
+    seek($fh, 0, SEEK_SET) or die "Cannot seek - $!\n";
 }
 
 sub unlock {
