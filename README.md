@@ -1,4 +1,4 @@
-# ForkAndGo
+# ForkCart
 Auto launch a process on Mojolicious startup
 
 ## Example Usage

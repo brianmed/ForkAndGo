@@ -4,7 +4,7 @@ use Test::More;
 use Mojolicious::Lite;
 use Test::Mojo;
 
-plugin 'ForkAndGo';
+plugin 'ForkCart';
 
 get '/' => sub {
   my $c = shift;

@@ -6,7 +6,7 @@ app->log->level("debug");
 
 plugin Minion => { SQLite => 'sqlite:test.db' };
 plugin qw(Mojolicious::Plugin::ForkCall);
-plugin qw(ForkAndGo);
+plugin qw(ForkCart);
 
 app->forked(sub {
     my $app = shift;
@@ -31,7 +31,7 @@ app->forked(sub {
             "worker"
         );
 
-        $app->log->debug("$$: ForkAndGo minion worker");
+        $app->log->debug("$$: ForkCart minion worker");
         system(@cmd) == 0 
             or die("0: $?");
 
@@ -49,12 +49,12 @@ app->forked(sub {
   my $app = shift;
   
   Mojo::IOLoop->timer(4 => sub {
-    $app->log->debug("$$: ForkAndGo server: 4000: timer hack");
+    $app->log->debug("$$: ForkCart server: 4000: timer hack");
 
     Mojo::IOLoop->server({port => 4000} => sub {
       my ($loop, $stream, $id) = @_;
 
-      $app->log->debug("$$: ForkAndGo server: 4000: accept");
+      $app->log->debug("$$: ForkCart server: 4000: accept");
     
       $stream->on(read => sub {
         my ($stream, $bytes) = @_;
