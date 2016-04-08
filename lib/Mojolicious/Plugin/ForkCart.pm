@@ -13,11 +13,9 @@ our $count = 0;
 use constant DEBUG => $ENV{MOJOLICIOUS_PLUGIN_FORKCART_DEBUG} || 0;
 
 sub register {
-  my ($self, $app, $ops) = @_;
+  my ($cart, $app, $ops) = @_;
 
   my $caddy = $caddy_pkg->new(app => $app);
-
-  $DB::single = 1;
 
   if ($caddy->is_alive && $ENV{HYPNOTOAD_STOP}) {
     my $state = $caddy->state;
@@ -341,7 +339,7 @@ Mojolicious::Plugin::ForkCart - Mojolicious Plugin
 =head1 SYNOPSIS
 
   # Mojolicious
-  $self->plugin('ForkCart');
+  $cart->plugin('ForkCart');
 
   # Mojolicious::Lite
   plugin 'ForkCart';
